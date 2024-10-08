@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 import uuid
 from langchain.memory import ConversationBufferMemory
 from langchain_groq.chat_models import ChatGroq
@@ -16,28 +17,33 @@ import matplotlib.pyplot as plt
 from colorama import Fore
 from langchain_core.prompts import PromptTemplate
 
-groq_api_key = config("GROQ_API_KEY")
 
+os.environ["GROQ_API_KEY"] = "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"
+groq_api_key = "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"
 client = Groq(api_key=groq_api_key)
 
-db = SQLDatabase.from_uri(config("POSTGRES_URL"))
+# db = SQLDatabase.from_uri(config("POSTGRES_URL"))
+db = SQLDatabase.from_uri("postgresql://postgres:1234@localhost:5432/tesing")
 print(db.dialect)
 print(db.get_usable_table_names())
 
-llm = ChatGroq(model="llama3-8b-8192")
+llm = ChatGroq(model="llama-3.1-70b-versatile",
+               temperature=0, max_tokens=None, max_retries=10, timeout=None)
 
 chain = create_sql_query_chain(llm, db)
 
 
 def run_read_only_query(query):
+    print(Fore.CYAN, query.strip())
 
-    if "Sorry" in query:
+    if "Sorry" in query.strip():
+        print(Fore.RED, query)
         return query
-
     execution_options = {"isolation_level": "READ ONLY"}
     try:
-
         result = db.run(command=query, execution_options=execution_options)
+
+        print(Fore.GREEN, result)
         return result
     except Exception as e:
         return f"An error occurred: {e}"
@@ -48,12 +54,68 @@ def get_schema(_):
 
 
 def validate_sql(query):
-    print("This is the SQL query: ", query)
-    if not query.strip():
+    match = re.search(r"```(?:sql)?\s*(.*?)\s*```", query, re.DOTALL)
+    if match:
+        query = match.group(1).strip()
+    print(Fore.RED, "This is the SQL query: ", query, Fore.RESET)
+    if not query:
         raise ValueError("Generated SQL query is empty or invalid.")
-    if not query.strip().upper().startswith("SELECT"):
+    if not query.upper().startswith("SELECT"):
         return "Sorry, data modification (e.g., INSERT, UPDATE, DELETE) or structural changes (e.g., CREATE, DROP, ALTER) are not allowed in read-only mode."
-    return query
+
+    # Use LLM to further analyze the prompt via a prompt template
+    prompt = sensitive_info_prompt_template.format(question=query)
+    human_message = HumanMessage(content=prompt)
+    response = llm.invoke([human_message])
+
+    # Check the LLM's response and decide if the query should be refined
+    if "safe to proceed" in response.content.lower():
+        print("LLM confirmed the query is safe to proceed.")
+        return query
+    else:
+        print(f"LLM response: {response.content}")
+        return """You have asked for information that is restricted or sensitive, such as passwords or other confidential data. For security and privacy reasons, this type of information cannot be provided.
+                Please note that attempting to access sensitive or restricted data goes against our policies. If you have any other questions or need further assistance, feel free to ask!"""
+
+
+# PromptTemplate for warning about sensitive information or modification requests
+sensitive_info_prompt_template = PromptTemplate.from_template(
+    """
+  You are an AI assistant responsible for analyzing SQL queries and ensuring that sensitive information is not exposed.
+
+The user has asked the following query: "{question}"
+
+Please follow these instructions when processing the query:
+
+1. **Check for Sensitive Information**: If the query involves any of the following sensitive fields, remove them from the results:
+   - Passwords
+   - OTP codes
+   - Social Security numbers (SSN)
+   - Driver's license numbers
+   - Passport numbers
+   - Credit card numbers
+   - Debit card numbers
+   - Bank account numbers
+
+2. **Handling Sensitive Fields**:
+    - **If the query only requests sensitive fields**, such as 'SELECT password FROM users', return a warning message saying:
+      - "Sensitive information like passwords, credit card numbers, or Social Security numbers cannot be retrieved for security reasons. Please refine your query to request non-sensitive data."
+
+    - **If the query includes both sensitive and non-sensitive fields**, return only the non-sensitive fields.
+      - Example: If the query is 'SELECT name, email, password FROM users', respond with 'name' and 'email', but exclude 'password'.
+
+    - Always ensure that sensitive fields are filtered out and provide the user with a safe response.
+
+3. **Safe Response**:
+    - **If no sensitive fields are found**, return the data normally and include a message like:
+      - "Safe to proceed. No sensitive data detected in the query."
+
+    - **If sensitive fields are found and removed**, return the modified result and say:
+      - "Safe to proceed. The sensitive fields have been excluded, and the remaining data is: [list of non-sensitive columns]."
+
+The SQL query you need to process is: "{question}"
+    """
+)
 
 
 template = """Based on the table schema below, write a SQL query that would answer the user's question:
@@ -69,17 +131,28 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-visualization_detection_prompt_template = """
-Is the following user query asking for a visualization (like a chart, plot, or graph)? 
-Please respond with 'Yes' or 'No'.
-
-User Query: {question}
-"""
 
 visualization_detection_prompt_template = PromptTemplate.from_template(
     """
-    Given the following user input, determine if the user is asking for a data visualization (such as a chart, graph, or plot).
-    Please respond with either 'yes' if visualization is requested, or 'no' if no visualization is requested.
+    You are an AI assistant responsible for determining whether the user is asking for any form of data visualization.
+    Data visualizations refer to visual representations of data such as charts, graphs, plots, or similar formats.
+
+    Visualizations may include specific types such as:
+    - Bar chart
+    - Line graph
+    - Pie chart
+    - Scatter plot
+    - Histogram
+    - Heatmap
+    - Or any other visual representation of data
+
+    Additionally, if the user simply requests a "visualization" or "visualizations"  without specifying the type (e.g., "Show me a visualization of members"),
+    you should still respond with 'yes', as the user is clearly asking for some form of data visualization.
+
+    If the user's input indicates they are asking for a data visualization of any kind, respond with 'yes'.
+    If the user's input does not indicate a request for a data visualization, respond with 'no'.
+
+    Be concise and respond with only 'yes' or 'no'.
 
     User input: "{input}"
     Visualization requested: """
@@ -87,59 +160,91 @@ visualization_detection_prompt_template = PromptTemplate.from_template(
 
 
 def check_for_visualization_request(llm, user_input):
+    print("Please respond with")
     """Use the LLM to check if the user's input is asking for a chart or visualization."""
 
     prompt = visualization_detection_prompt_template.format(input=user_input)
 
     human_message = HumanMessage(content=prompt)
     response = llm.invoke([human_message])
-
+    print(Fore.CYAN, response.content, Fore.RESET)
     is_visualization_requested = response.content.strip().lower()
-    return is_visualization_requested == "yes"
+    return is_visualization_requested == "no"
 
 
 def clean_code(response_content):
-    # Split the response content by lines
+    """
+    Cleans the code by filtering out non-code lines and retaining only lines that appear to be Python code.
+    """
+
     lines = response_content.splitlines()
 
-    # Initialize a flag to identify code block and a list to store cleaned code lines
-    in_code_block = False
     cleaned_code_lines = []
 
+    code_like_pattern = re.compile(
+        r'^[\s]*(import|from|def|class|if|else|for|while|try|except|return|with|plt\.|pd\.)|^[\s]*#')
+
     for line in lines:
-        # Detect the start and end of the code block
-        if line.strip().startswith("```"):
-            in_code_block = not in_code_block  # Toggle the flag
-        elif in_code_block:
+
+        if code_like_pattern.match(line) or line.strip().startswith(('', '    ', 'plt', 'os', 'uuid')):
             cleaned_code_lines.append(line)
 
-    # Join the cleaned lines to form the final cleaned code
     cleaned_code = "\n".join(cleaned_code_lines)
     return cleaned_code
 
 
 def ask_llm_to_generate_code(
-    llm, sql_query, result, chart_type="bar chart", library="matplotlib"
+    llm, sql_query, result, chart_type="bar", library="matplotlib"
 ):
-    # Create the prompt
+    print(Fore.LIGHTYELLOW_EX, result, Fore.RESET)
+
+    if not result or len(result) == 0:
+        raise ValueError(
+            "SQL query result is empty. Visualization cannot be generated.")
+
     prompt = f"""
-    The SQL query result is provided below as a list of dictionaries where each dictionary represents a row:
-    {result}
+You are an AI assistant that recommends and generates appropriate data visualizations.
+Based on the user's SQL query, the query result, and the desired chart type, please generate Python code to visualize the data.
+The chart types and their use cases are as follows:
 
-    Based on this data, please generate Python code using {library} to create a {chart_type}.
-    Ensure that the SQL query result is used to create the DataFrame or data structure for the chart.
-    The axes should be appropriately labeled based on the available data and all necessary imports should be included.
+- Bar Graph: Compare categorical data or show changes over time with discrete categories.
+- Horizontal Bar Graph: Compare small categories or when there is large disparity between values.
+- Scatter Plot: Identify relationships between two numerical variables or plot distributions.
+- Pie Chart: Show proportions or percentages within a whole.
+- Line Graph: Show trends and distributions over time (both axes must be continuous).
 
-    Additionally, after generating the chart, save the figure to a directory named 'visualization'.
-    If this directory does not exist, please create it before saving the chart.
-    Use the uuid module to generate a unique file name, combining the chart type and a unique identifier.
-    """
+The SQL query result is provided below as a list of dictionaries:
+{result}
+
+Please follow these additional instructions:
+- Don't generate python code in markdown format with "```python ```"
+- Use pandas to create a DataFrame from the result.
+    When generating the code, **do not use** `plt.show()` to display the chart.
+    Instead, save the chart as an image file using `plt.savefig()`.
+- Use the first column as the x-axis label and the second column as the y-axis label.
+- Generate a {chart_type} using the {library} library.
+- import matplotlib
+    matplotlib.use('Agg')  # Use a non-interactive backend
+
+    import matplotlib.pyplot as plt 
+- Show Grid of the canvas 
+
+
+
+The generated code should:
+- Create a directory named 'visualization' if it doesn't exist.
+- Save the chart to the 'visualization' directory with a unique filename (use the `uuid` module to generate a unique identifier).
+"""
 
     human_message = HumanMessage(content=prompt)
     response = llm.invoke([human_message])
-    cleaned_code = clean_code(response.content)
+    print("hello my dear : "+Fore.RED, response.content, Fore.RESET)
 
-    print("Cleaned Python code:\n", cleaned_code, "\nEnd")
+    cleaned_code = clean_code(
+        response.content) if 'clean_code' in globals() else response.content
+
+    print("Generated Python code:\n", cleaned_code, "\nEnd")
+
     return cleaned_code
 
 
@@ -157,8 +262,6 @@ def execute_generated_code(generated_code, output_folder="images"):
         file_name = f"plot_{current_date}_{unique_id}.png"
         output_path = os.path.join(output_folder, file_name)
         exec(generated_code, globals())
-        plt.savefig(output_path)
-        plt.close()
         return f"Plot saved successfully at {output_path}", file_name
 
     except Exception as e:
@@ -168,11 +271,13 @@ def execute_generated_code(generated_code, output_folder="images"):
 def handle_user_query(llm, user_query):
 
     if check_for_visualization_request(llm, user_query):
-
+        print(Fore.LIGHTYELLOW_EX, "Hello World", Fore.RESET)
         sql_result = run_read_only_query(validate_sql(user_query))
+        print(Fore.CYAN, sql_result)
         generated_code = ask_llm_to_generate_code(llm, user_query, sql_result)
         print(Fore.BLUE, generated_code, Fore)
         plot_path = execute_generated_code(generated_code)
+        print("Hello magic")
         print(Fore.GREEN, plot_path)
 
         return f"Visualization has been generated and saved at {plot_path}."
@@ -257,6 +362,7 @@ chain = (
         schema=get_schema,
         response=lambda x: handle_user_query(llm, x["query"]),
     )
-    | response_prompt
+    # Check if the response is the "Sorry" message, and return it immediately without passing to llm
+    | (lambda x: "Please return only : Sorry, data modification (e.g., INSERT, UPDATE, DELETE) or structural changes (e.g., CREATE, DROP, ALTER) are not allowed in read-only mode." if "Sorry" in x["response"] else response_prompt)
     | llm
 )
