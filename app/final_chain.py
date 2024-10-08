@@ -22,8 +22,8 @@ os.environ["GROQ_API_KEY"] = "gsk_yq7tfpWJvSFFlAW6ZzepWGdyb3FYR4jVATgGjguUQtRFp7
 groq_api_key = "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"
 client = Groq(api_key=groq_api_key)
 
-# db = SQLDatabase.from_uri(config("POSTGRES_URL"))
-db = SQLDatabase.from_uri("postgresql://postgres:1234@localhost:5432/tesing")
+db = SQLDatabase.from_uri(config("POSTGRES_URL"))
+# db = SQLDatabase.from_uri("postgresql://postgres:1234@localhost:5432/tesing")
 print(db.dialect)
 print(db.get_usable_table_names())
 
