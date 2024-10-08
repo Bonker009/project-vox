@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 import uuid
 from langchain.memory import ConversationBufferMemory
 from langchain_groq.chat_models import ChatGroq
@@ -15,8 +16,10 @@ import os
 import matplotlib.pyplot as plt
 from colorama import Fore
 from langchain_core.prompts import PromptTemplate
+from langchain.chains import create_sql_query_chain
 
 groq_api_key = config("GROQ_API_KEY")
+os.environ["GROQ_API_KEY"] = groq_api_key
 
 client = Groq(api_key=groq_api_key)
 
@@ -24,9 +27,15 @@ db = SQLDatabase.from_uri(config("POSTGRES_URL"))
 print(db.dialect)
 print(db.get_usable_table_names())
 
-llm = ChatGroq(model="llama3-8b-8192")
+llm = ChatGroq(
+    model="llama3-groq-70b-8192-tool-use-preview",
+    temperature=0.7,
+    max_tokens=None,
+    timeout=None,
+    max_retries=10
+)
 
-chain = create_sql_query_chain(llm, db)
+create_sql_chain = create_sql_query_chain(llm, db)
 
 
 def run_read_only_query(query):
@@ -38,6 +47,7 @@ def run_read_only_query(query):
     try:
 
         result = db.run(command=query, execution_options=execution_options)
+        print(Fore.GREEN,"This is Result : " , result,Fore.RESET)
         return result
     except Exception as e:
         return f"An error occurred: {e}"
@@ -46,15 +56,26 @@ def run_read_only_query(query):
 def get_schema(_):
     return db.get_table_info()
 
-
+ 
 def validate_sql(query):
     print("This is the SQL query: ", query)
+    
+    # Check if the query is empty
     if not query.strip():
         raise ValueError("Generated SQL query is empty or invalid.")
-    if not query.strip().upper().startswith("SELECT"):
-        return "Sorry, data modification (e.g., INSERT, UPDATE, DELETE) or structural changes (e.g., CREATE, DROP, ALTER) are not allowed in read-only mode."
-    return query
+    
+# Regular expression to match the SQL query
+    sql_query = re.search(r'SELECT.*?;', query, re.DOTALL)
+    print(sql_query)
+    if sql_query:
+        # Clean and return the SELECT query
+        cleaned_query = sql_query.group(0)
 
+        print("This is the valid SQL query:", cleaned_query)
+        return cleaned_query
+    else:
+        # Return a message if the query contains non-SELECT commands
+        return "Sorry, data modification (e.g., INSERT, UPDATE, DELETE) or structural changes (e.g., CREATE, DROP, ALTER) are not allowed in read-only mode."
 
 template = """Based on the table schema below, write a SQL query that would answer the user's question:
 {schema}
@@ -170,6 +191,7 @@ def handle_user_query(llm, user_query):
     if check_for_visualization_request(llm, user_query):
 
         sql_result = run_read_only_query(validate_sql(user_query))
+        print("SQL Result:", sql_result)
         generated_code = ask_llm_to_generate_code(llm, user_query, sql_result)
         print(Fore.BLUE, generated_code, Fore)
         plot_path = execute_generated_code(generated_code)
@@ -177,6 +199,7 @@ def handle_user_query(llm, user_query):
 
         return f"Visualization has been generated and saved at {plot_path}."
     else:
+        print()
         return run_read_only_query(validate_sql(user_query))
 
 
@@ -231,21 +254,26 @@ class InputType(BaseModel):
     question: str
 
 
-response_template = """Based on the table schema below, question, sql query, and sql response, write a natural language response:
+response_template = """
+on the table schema below, question, sql query, and sql response, write a natural language response:
 {schema}
 
 Question: {question}
-SQL Query: {query}
 SQL Response: {response}"""
 
 response_prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "Given an input question and SQL response, convert it to a natural "
-            "language answer. No pre-amble.",
+            """You are the expert of giving answers following user question.
+            Here is the context the table schema below, question, sql query, and sql response, write a human language response:
+                {schema}
+
+                Question: {question}
+                SQL Response: {response}
+            """
         ),
-        ("human", response_template),
+        # ("human", response_template),
     ]
 )
 
