@@ -2,9 +2,13 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from langserve import add_routes
 from app.final_chain import chain
+from app.database import engine, Base
 
 app = FastAPI()
 
+# Create the database tables
+Base.metadata.create_all(bind=engine)
+print("engine is ", engine)
 
 @app.get("/")
 async def redirect_root_to_docs():
