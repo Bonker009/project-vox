@@ -17,7 +17,6 @@ import matplotlib.pyplot as plt
 from colorama import Fore
 from langchain_core.prompts import PromptTemplate
 
-
 groq_api_key = config("GROQ_API_KEY")
 client = Groq(api_key=groq_api_key)
 # db = SQLDatabase.from_uri(config("POSTGRES_URL"))
@@ -172,7 +171,7 @@ def check_for_visualization_request(llm, user_input):
     response = llm.invoke([human_message])
     # (Fore.CYAN, response.content, Fore.RESET)
     is_visualization_requested = response.content.strip().lower()
-    return is_visualization_requested == "no"
+    return is_visualization_requested == "yes"
 
 
 def clean_code(response_content):
@@ -291,7 +290,7 @@ def handle_user_query(llm, user_query):
 
 def get_history(x):
     history = memory.load_memory_variables(x)["history"]
-    print(history)
+    print(Fore.RED, "History: ", history, Fore.RESET)
     if isinstance(history, str):
         return [HumanMessage(content=history)]
     return history
